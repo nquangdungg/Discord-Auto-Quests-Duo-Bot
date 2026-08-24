@@ -1,214 +1,212 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/HieuTool-v2.0.0-blueviolet?style=for-the-badge&logo=discord&logoColor=white" alt="Version"/>
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D18-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node"/>
-  <img src="https://img.shields.io/badge/TypeScript-5.3+-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript"/>
-  <img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License"/>
-</p>
+# Discord Auto Quest Duo Bot
 
-<h1 align="center">🔮 HieuTool — Discord Quest [Updated]</h1>
-
-<p align="center">
-  <b>Công cụ tự động hoàn thành và nhận thưởng Quest trên Discord</b><br/>
-  <i>Auto-complete & auto-claim Discord Quests — fast, silent, and effortless.</i>
-</p>
+> **Mục đích giáo dục / học tập.**  
+> Việc dùng **user token** để tự động hoàn thành Discord Quest **vi phạm Discord Terms of Service**.  
+> Người dùng tự chịu rủi ro (có thể bị hạn chế hoặc ban tài khoản).  
 
 ---
 
-## ✨ Giới thiệu
+## Tổng quan
 
-**HieuTool** là một công cụ dòng lệnh (CLI) được viết bằng TypeScript, giúp bạn **tự động hoàn thành** các Discord Quest và **nhận thưởng (claim)** mà không cần thao tác thủ công.
+Hệ thống gồm **2 bot Discord** tách biệt:
 
-### 🎯 Tính năng chính
+| Bot | Vai trò | Ai dùng |
+|-----|---------|---------|
+| **Bot 01** | Người dùng cuối — khai báo token, chạy quest | Mọi user đã `/agree` |
+| **Bot 02** | Quản trị — whitelist server, kênh thông báo, ban, phân quyền | Owner / Admin |
 
-| Tính năng | Mô tả |
-|-----------|-------|
-| 🎬 **Auto Watch Video** | Tự động xem video quest với tiến trình giả lập chính xác |
-| 🎮 **Auto Play on Desktop** | Giả lập heartbeat cho quest dạng chơi game trên desktop |
-| 📡 **Auto Stream** | Hỗ trợ quest dạng stream trên desktop |
-| 🕹️ **Auto Play Activity** | Hỗ trợ quest dạng chơi Activity |
-| ⭐ **Auto Claim Rewards** | Tự động nhận thưởng ngay khi hoàn thành quest |
-| 🔮 **Orbs Tracking** | Theo dõi số Orbs trước và sau khi hoàn thành |
-| 📊 **Live Dashboard** | Giao diện CLI real-time hiển thị tiến trình từng quest |
+- Quest engine gọi **REST API** với user token (không dùng Gateway selfbot chung với bot).
+- Token user được **mã hóa AES-256-GCM** trước khi lưu.
+- Bot 02 **tự rời** server không nằm trong whitelist.
 
 ---
 
-## 📋 Yêu cầu hệ thống
+## Yêu cầu
 
-- **Node.js** >= 18
-- **npm** (đi kèm với Node.js)
-- **Discord User Token** (token tài khoản người dùng)
+- Node.js **≥ 18**
+- 2 ứng dụng bot trên [Discord Developer Portal](https://discord.com/developers/applications)
+- User token Discord (chỉ dùng tài khoản phụ / học tập)
 
 ---
 
-## 🚀 Hướng dẫn cài đặt & sử dụng
+## Cài đặt
 
-### Bước 1: Clone hoặc tải source code
-
-```bash
-git clone https://github.com/Nguoibianhz/Discord-Auto-Quests.git
-cd Discord-Auto-Quests
-```
-
-### Bước 2: Cài đặt dependencies
+### 1. Cài dependency
 
 ```bash
 npm install
 ```
 
-### Bước 3: Cấu hình Token
-
-Tạo file `.env` trong thư mục gốc của project với nội dung:
-
-```env
-TOKEN=your_discord_user_token_here
-```
-
-> ⚠️ **Lưu ý bảo mật**: Không bao giờ chia sẻ token của bạn cho bất kỳ ai. Token cho phép truy cập toàn bộ tài khoản Discord của bạn.
-
-### Bước 4: Chạy tool
+### 2. Cấu hình `.env`
 
 ```bash
-npm run go
+cp .env.example .env
 ```
 
-Hoặc chạy trực tiếp:
+| Biến | Mô tả |
+|------|--------|
+| `BOT1_TOKEN` | Token Bot 01 (user-facing) |
+| `BOT2_TOKEN` | Token Bot 02 (admin) |
+| `BOT1_CLIENT_ID` | Application ID Bot 01 |
+| `BOT2_CLIENT_ID` | Application ID Bot 02 |
+| `OWNER_ID` | Discord User ID chủ bot (super owner) |
+| `ENCRYPTION_KEY` | 64 ký tự hex (32 bytes) — khóa mã hóa token |
+| `INITIAL_GUILD_IDS` | ID server admin, cách nhau bằng dấu phẩy (whitelist Bot 02 lúc start) |
+
+Tạo `ENCRYPTION_KEY`:
 
 ```bash
-npx tsx --env-file=.env farm.ts
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 3. Privileged Intents (Developer Portal)
+
+Với **cả 2 bot**, mục **Bot → Privileged Gateway Intents**:
+
+- Có thể chỉ cần intents mặc định; code hiện dùng `Guilds`.
+- Nếu sau này bật thêm intent privileged → phải bật tương ứng trên portal.
+
+### 4. Mời bot vào server
+
+**OAuth2 → URL Generator:**
+
+- Scopes: `bot` + `applications.commands`
+- Permissions gợi ý: `Send Messages`, `Embed Links`, `Use Application Commands`
+
+Mời **Bot 02** vào đúng server có ID trong `INITIAL_GUILD_IDS`.
+
+### 5. Đăng ký slash command
+
+```bash
+npm run register
+```
+
+### 6. Chạy
+
+```bash
+npm run dev
 ```
 
 ---
 
-## 🖥️ Giao diện Dashboard
+## Lệnh
 
-Khi chạy, tool sẽ hiển thị một bảng dashboard real-time trong terminal:
+### Bot 01 — Người dùng
 
-```
-   __  __   ____   ______   __  __   ______   ____    ____    __
-  / / / /  /  _/  / ____/  / / / / /_  __/  / __ \  / __ \  / /
- / /_/ /  / /   / __/   / / / /   / /   / / / / / / / / /
-/ __  /  / /   / /___  / /_/ /   / /   / /_/ / / /_/ / / /___
-/_/ /_/  \___/  \____/   \____/   /_/    \____/ \____/  /_____/
+| Lệnh | Mô tả |
+|------|--------|
+| `/agree` | Đọc và chấp nhận điều khoản sử dụng |
+| `/token` | Nhập Discord **user token** (lưu dạng mã hóa) |
+| `/autoquest` `on` / `off` | Bật / tắt chạy quest liên tục; tùy chọn `dms` |
+| `/auto` | Chạy **một lần** toàn bộ quest pending rồi dừng |
+| `/quest` | Hiện danh sách quest → chọn quest cụ thể để làm |
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ⦿ Account: username | ID: 123456 | Orbs: 🔮 500 | 12:00:00
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-┌────┬──────────────────────┬────────┬──────────┬──────────┬──────────┐
-│ #  │ QUEST                │ TYPE   │ REWARD   │REMAINING │ STATUS   │
-├────┼──────────────────────┼────────┼──────────┼──────────┼──────────┤
-│ 1  │ Watch Trailer        │  🎬    │ 50 Orbs  │ 2m 30s   │ ⟳ RUN   │
-│ 2  │ Play Game X          │  🎮    │ 100 Orbs │ ● DONE   │ ★ CLAIM  │
-└────┴──────────────────────┴────────┴──────────┴──────────┴──────────┘
+**Thứ tự dùng:** `/agree` → `/token` → `/auto` / `/autoquest` / `/quest`.
 
-  Progress ████░░ 1/2 (1 active)
+### Bot 02 — Quản trị
 
-  Press Ctrl+C to stop
-```
+| Lệnh | Quyền | Mô tả |
+|------|--------|--------|
+| `/addsv` | Admin+ | Thêm server vào whitelist Bot 02 |
+| `/notification` | Admin+ | Đặt kênh thông báo quest mới |
+| `/notiquest` | Admin+ | Đặt kênh theo dõi tiến độ quest (live embed) |
+| `/ban` | Admin+ | Cấm user khỏi bot |
+| `/unban` | Admin+ | Gỡ cấm |
+| `/admin` | Admin+ | Thêm Admin |
+| `/owner` | Owner | Thêm Owner |
+| `/reject` | Owner | Gỡ Admin |
+| `/rejecto` | Super owner (`OWNER_ID`) | Gỡ Owner |
 
 ---
 
-## 📁 Cấu trúc dự án
+## Luồng hoạt động
 
 ```
-farmdiscord/
-├── farm.ts           # Entry point — UI dashboard & orchestration
+User /agree → tos_accepted
+User /token → token mã hóa lưu data/hieutool.json
+
+/auto hoặc /autoquest hoặc /quest
+  → giải mã token
+  → REST: GET /quests/@me
+  → enroll (nếu cần)
+  → Watch Video: POST video-progress
+  → Play Desktop: POST heartbeat
+  → claim-reward
+  → cập nhật embed trên kênh /notiquest (nếu đã set)
+```
+
+### Loại quest hỗ trợ
+
+| Loại | Hỗ trợ |
+|------|--------|
+| Watch Video / Mobile | Có |
+| Play on Desktop | Có (heartbeat ~60s) |
+| Stream / Activity / Xbox / PlayStation | Bỏ qua |
+
+---
+
+## Cấu trúc thư mục
+
+```
+hieutool-bot/
 ├── src/
-│   └── engine.ts     # Core engine — Discord API, Quest logic
-├── .env              # Cấu hình token (không commit lên git!)
-├── package.json      # Dependencies & scripts
-├── tsconfig.json     # TypeScript config
-├── LICENSE           # Giấy phép sử dụng
-└── README.md         # Tài liệu bạn đang đọc
+│   ├── bots/
+│   │   ├── bot1.ts          # Bot người dùng
+│   │   └── bot2.ts          # Bot quản trị
+│   ├── engine/
+│   │   └── quest-engine.ts  # REST-only, user token
+│   ├── workers/
+│   │   └── quest-worker.ts  # Worker đa user + live embed
+│   ├── database/
+│   │   └── index.ts         # JSON store (data/hieutool.json)
+│   ├── utils/
+│   │   └── crypto.ts        # AES-256-GCM
+│   ├── register-commands.ts
+│   └── index.ts
+├── data/                    # Tự tạo khi chạy
+├── .env.example
+├── package.json
+└── README.md
 ```
 
 ---
 
-## ❓ Câu hỏi thường gặp (FAQ)
+## Phân tách kỹ thuật
 
-<details>
-<summary><b>Cách lấy Discord User Token?</b></summary>
+| Thành phần | Thư viện | Ghi chú |
+|------------|----------|---------|
+| Bot 01 / 02 | `discord.js` | Bot token + Gateway, `intents: Guilds` |
+| Quest engine | `fetch` thuần | User token + REST, **không** mở Gateway, **không** patch `WebSocketShard` |
 
-1. Mở Discord trên trình duyệt hoặc ứng dụng Desktop
-2. Nhấn `Ctrl + Shift + I` để mở Developer Tools
-3. Chuyển sang tab **Network**
-4. Thực hiện bất kỳ hành động nào trên Discord
-5. Tìm request đến `discord.com/api` và copy giá trị `Authorization` trong Headers
-
-</details>
-
-<details>
-<summary><b>Tool có an toàn không?</b></summary>
-
-Tool hoạt động bằng cách giả lập các request API giống như Discord Client chính thức. Tuy nhiên, việc sử dụng user token tự động có thể vi phạm Terms of Service của Discord. **Sử dụng có rủi ro bị ban tài khoản.**
-
-</details>
-
-<details>
-<summary><b>Tại sao một số quest bị SKIP?</b></summary>
-
-Một số quest có thể chưa được hỗ trợ hoặc đã hết hạn. Tool chỉ xử lý các quest đang hoạt động và chưa hoàn thành.
-
-</details>
+Hai lớp này tách biệt để bot chính thức không bị nhiễm Identify kiểu user client.
 
 ---
 
-## 📊 Thống kê dự án
+## Scripts
 
-<p align="center">
-  <a href="https://github.com/Nguoibianhz/Discord-Auto-Quests/stargazers">
-    <img src="https://img.shields.io/github/stars/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=f0e68c" alt="Stars"/>
-  </a>
-  <a href="https://github.com/Nguoibianhz/Discord-Auto-Quests/network/members">
-    <img src="https://img.shields.io/github/forks/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=87ceeb" alt="Forks"/>
-  </a>
-  <a href="https://github.com/Nguoibianhz/Discord-Auto-Quests/issues">
-    <img src="https://img.shields.io/github/issues/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=ffa07a" alt="Issues"/>
-  </a>
-  <a href="https://github.com/Nguoibianhz/Discord-Auto-Quests/commits">
-    <img src="https://img.shields.io/github/commit-activity/m/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=98fb98" alt="Commits"/>
-  </a>
-  <img src="https://img.shields.io/github/last-commit/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=dda0dd" alt="Last Commit"/>
-  <img src="https://img.shields.io/github/watchers/Nguoibianhz/Discord-Auto-Quests?style=for-the-badge&logo=github&color=c9b1ff" alt="Watchers"/>
-</p>
-
-## 📈 Star History
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Nguoibianhz/Discord-Auto-Quests&type=Date&theme=dark&t=20260311" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Nguoibianhz/Discord-Auto-Quests&type=Date&t=20260311" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Nguoibianhz/Discord-Auto-Quests&type=Date&t=20260311" />
-  </picture>
-</p>
+| Lệnh | Mô tả |
+|------|--------|
+| `npm run dev` | Chạy cả 2 bot (tsx + `.env`) |
+| `npm run register` | Đăng ký / cập nhật slash commands |
+| `npm run build` | Compile TypeScript → `dist/` |
+| `npm start` | Chạy bản build |
 
 ---
 
-## 👨‍💻 Tác giả
+## Lưu ý bảo mật
 
-<p align="center">
-  <a href="https://nguyenmanhhieu.info.vn/">
-    <img src="https://img.shields.io/badge/Website-nguyenmanhhieu.info.vn-blue?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Website"/>
-  </a>
-</p>
-
-| | Thông tin |
-|---|---|
-| 👤 **Tên** | **Nguyễn Mạnh Hiếu** |
-| 🌐 **Website** | [nguyenmanhhieu.info.vn](https://nguyenmanhhieu.info.vn/) |
-| 🛠️ **Dự án** | HieuTool — Discord Quest Auto Claim |
-
-> 💬 Nếu bạn muốn sử dụng source code này cho mục đích cá nhân hoặc thương mại, vui lòng **liên hệ tác giả** để xin phép tại [nguyenmanhhieu.info.vn](https://nguyenmanhhieu.info.vn/).
+1. **Không** commit file `.env` hoặc `data/`.
+2. Token user chỉ nên dùng trên tài khoản phụ.
+3. `ENCRYPTION_KEY` mất = không giải mã được token đã lưu.
+4. Không chia sẻ user token cho bất kỳ ai.
 
 ---
 
-## 📜 Bản quyền
+## Giấy phép / trách nhiệm
+Dự án phục vụ mục đích **học hỏi** API Discord, mã hóa, dual-bot và worker pattern.  
 
-Copyright © 2024-2026 **Nguyễn Mạnh Hiếu**. All rights reserved.
+KHÔNG chịu trách nhiệm nếu tài khoản bị Discord xử lý do vi phạm ToS.
 
-Xem chi tiết tại file [LICENSE](./LICENSE).
+Dự án được Fork từ repo https://github.com/Nguoibianhz/Discord-Auto-Quests
 
----
-
-<p align="center">
-  <sub>Made with ❤️ by <a href="https://nguyenmanhhieu.info.vn/">Nguyễn Mạnh Hiếu</a></sub>
-</p>
+Giấy phép General Public License v3.0 

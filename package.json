@@ -1,27 +1,25 @@
 {
-  "name": "hieutool",
-  "version": "2.0.0",
-  "description": "Discord Quest Auto Claim",
-  "main": "farm.ts",
+  "name": "hieutool-bot",
+  "version": "1.0.1",
+  "description": "Educational Discord Dual-Bot System for Quest Automation (Learning Purpose Only)",
+  "main": "dist/index.js",
   "scripts": {
-    "go": "tsx --env-file=.env farm.ts"
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx --env-file=.env src/index.ts",
+    "register": "tsx --env-file=.env src/register-commands.ts",
+    "test:smoke": "tsx --env-file=.env scripts/smoke-test.ts"
   },
-  "type": "commonjs",
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
-  },
-  "dependencies": {
-    "@discordjs/core": "^1.1.1",
-    "@discordjs/rest": "^2.2.0",
-    "@discordjs/ws": "^1.0.2",
-    "chalk": "^4.1.2",
-    "cli-table3": "^0.6.3",
-    "discord-api-types": "^0.37.61",
-    "undici": "^6.0.0"
   }
 }
