@@ -1,8 +1,8 @@
 import 'dotenv/config';
+import { initDatabase } from './database';
 import { bot1 } from './bots/bot1';
 import { bot2 } from './bots/bot2';
 
-// Validate critical env
 const required = ['BOT1_TOKEN', 'BOT2_TOKEN', 'OWNER_ID', 'ENCRYPTION_KEY'];
 for (const key of required) {
   if (!process.env[key]) {
@@ -17,7 +17,8 @@ if (process.env.ENCRYPTION_KEY!.length !== 64) {
 }
 
 async function main() {
-  console.log('Starting HieuTool Dual-Bot System (Educational)...');
+  console.log('Starting Dual-Bot System (Educational)...');
+  initDatabase();
 
   await Promise.all([
     bot1.login(process.env.BOT1_TOKEN),

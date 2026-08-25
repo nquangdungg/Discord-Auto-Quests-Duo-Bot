@@ -3,12 +3,16 @@ export type StaffRole = 'owner' | 'admin';
 export interface UserRecord {
   user_id: string;
   encrypted_token: string | null;
-  is_banned: number;          // 0 | 1
-  tos_accepted: number;       // 0 | 1
-  licensed: number;           // 0 | 1
+  is_banned: number;
+  ban_reason: string | null;
+  ban_expires_at: string | null;
+  banned_by: string | null;
+  banned_at: string | null;
+  tos_accepted: number;
+  licensed: number;
   license_key_id: string | null;
-  autoquest_enabled: number;  // 0 | 1
-  dms_enabled: number;        // 0 | 1
+  autoquest_enabled: number;
+  dms_enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -27,12 +31,12 @@ export interface ServerRecord {
 }
 
 export interface LicenseKeyRecord {
-  id: string;                 // internal id
-  raw_payload: string;        // original 32-char payload (encrypted in DB too if needed)
-  encrypted_key: string;      // the key shown to admin
+  id: string;
+  raw_payload: string;
+  encrypted_key: string;
   created_by: string;
   created_at: string;
-  expires_at: string;         // created_at + 5 minutes
+  expires_at: string;
   used_by: string | null;
   used_at: string | null;
   status: 'unused' | 'used' | 'expired' | 'revoked';
@@ -41,12 +45,4 @@ export interface LicenseKeyRecord {
 export interface SettingRecord {
   key: string;
   value: string;
-}
-
-export interface QuestProgressEmbed {
-  userId: string;
-  messageId: string;
-  channelId: string;
-  questId: string;
-  lastUpdate: number;
 }

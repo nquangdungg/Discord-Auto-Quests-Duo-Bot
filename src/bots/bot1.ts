@@ -49,8 +49,8 @@ function tosEmbed(): EmbedBuilder {
     .setTimestamp();
 }
 
-function requireAccess(userId: string) {
-  return users.canUseBot(userId);
+async function requireAccess(userId: string) {
+  return await users.canUseBot(userId);
 }
 
 bot1.once(Events.ClientReady, (c) => {
@@ -96,7 +96,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  const check = requireAccess(user.id);
+  const check = await requireAccess(user.id);
   if (!check.ok) {
     await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
     return;
@@ -123,7 +123,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
 
     if (state === 'off') {
       const stopped = workerManager?.stop(user.id) ?? false;
-      users.setAutoQuest(user.id, false, dms);
+      await users.setAutoQuest(user.id, false, dms);
       await interaction.reply({
         content: stopped ? '⏹️ Đã dừng AutoQuest.' : 'Không có AutoQuest đang chạy.',
         flags: MessageFlags.Ephemeral,
@@ -207,9 +207,9 @@ async function handleButton(interaction: ButtonInteraction) {
   }
 
   if (interaction.customId === 'tos_accept') {
-    users.upsert(interaction.user.id);
-    users.setTosAccepted(interaction.user.id, true);
-    users.setLicensed(interaction.user.id, true, null); // keep field, no key system
+    await users.upsert(interaction.user.id);
+    await users.setTosAccepted(interaction.user.id, true);
+    await users.setLicensed(interaction.user.id, true, null); // keep field, no key system
 
     const embed = new EmbedBuilder()
       .setColor(0x57F287)
@@ -226,14 +226,14 @@ async function handleModal(interaction: ModalSubmitInteraction) {
 
   const token = interaction.fields.getTextInputValue('token_value').trim();
   const userId = interaction.user.id;
-  const check = requireAccess(userId);
+  const check = await requireAccess(userId);
   if (!check.ok) {
     await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
     return;
   }
 
   try {
-    users.setToken(userId, encrypt(token));
+    await users.setToken(userId, encrypt(token));
     const embed = new EmbedBuilder()
       .setColor(0x57F287)
       .setTitle('Token đã lưu')
@@ -251,7 +251,7 @@ async function handleModal(interaction: ModalSubmitInteraction) {
 async function handleSelect(interaction: StringSelectMenuInteraction) {
   if (interaction.customId !== 'quest_select') return;
 
-  const check = requireAccess(interaction.user.id);
+  const check = await requireAccess(interaction.user.id);
   if (!check.ok) {
     await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
     return;

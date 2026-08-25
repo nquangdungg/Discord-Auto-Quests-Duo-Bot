@@ -61,6 +61,23 @@ const bot2Commands = [
     .setDescription('Cấm user khỏi bot')
     .addStringOption((o) =>
       o.setName('user_id').setDescription('Discord User ID').setRequired(true),
+    )
+    .addStringOption((o) =>
+      o.setName('reason').setDescription('Lý do cấm').setRequired(false),
+    )
+    .addStringOption((o) =>
+      o
+        .setName('duration')
+        .setDescription('Thời hạn cấm')
+        .setRequired(false)
+        .addChoices(
+          { name: '1 giờ', value: '1h' },
+          { name: '6 giờ', value: '6h' },
+          { name: '1 ngày', value: '1d' },
+          { name: '7 ngày', value: '7d' },
+          { name: '30 ngày', value: '30d' },
+          { name: 'Vĩnh viễn', value: 'permanent' },
+        ),
     ),
   new SlashCommandBuilder()
     .setName('unban')

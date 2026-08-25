@@ -1,267 +1,296 @@
 /**
- * Lightweight JSON database (no native deps).
- * Sensitive fields (tokens) are stored already encrypted by the crypto layer.
+ * Supabase (PostgreSQL) database layer
+ * Tables: users, staff, servers, settings
  */
-import fs from 'node:fs';
-import path from 'node:path';
-import type {
-  UserRecord,
-  StaffRecord,
-  ServerRecord,
-  LicenseKeyRecord,
-  StaffRole,
-} from '../types';
+import type { UserRecord, StaffRecord, ServerRecord, StaffRole } from '../types';
+import { initSupabase, getSupabase } from './supabase';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'hieutool.json');
-
-interface DbShape {
-  users: Record<string, UserRecord>;
-  staff: Record<string, StaffRecord>;
-  servers: Record<string, ServerRecord>;
-  license_keys: Record<string, LicenseKeyRecord>;
-  settings: Record<string, string>;
+export function initDatabase(): void {
+  initSupabase();
+  console.log('[DB] Supabase ready');
 }
 
-function emptyDb(): DbShape {
-  return { users: {}, staff: {}, servers: {}, license_keys: {}, settings: {} };
+function defaultUser(userId: string): UserRecord {
+  const now = new Date().toISOString();
+  return {
+    user_id: userId,
+    encrypted_token: null,
+    is_banned: 0,
+    ban_reason: null,
+    ban_expires_at: null,
+    banned_by: null,
+    banned_at: null,
+    tos_accepted: 0,
+    licensed: 0,
+    license_key_id: null,
+    autoquest_enabled: 0,
+    dms_enabled: 0,
+    created_at: now,
+    updated_at: now,
+  };
 }
 
-function load(): DbShape {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE)) {
-    const db = emptyDb();
-    save(db);
-    return db;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) as DbShape;
-  } catch {
-    return emptyDb();
-  }
-}
-
-function save(db: DbShape): void {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = DB_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8');
-  fs.renameSync(tmp, DB_FILE);
-}
-
-let cache = load();
-
-function persist() {
-  save(cache);
-}
-
+// ====================== USERS ======================
 export const users = {
-  upsert(userId: string): void {
+  async upsert(userId: string): Promise<void> {
+    const sb = getSupabase();
+    const { data } = await sb.from('users').select('user_id').eq('user_id', userId).maybeSingle();
     const now = new Date().toISOString();
-    if (!cache.users[userId]) {
-      cache.users[userId] = {
-        user_id: userId,
-        encrypted_token: null,
-        is_banned: 0,
-        tos_accepted: 0,
-        licensed: 0,
-        license_key_id: null,
-        autoquest_enabled: 0,
-        dms_enabled: 0,
-        created_at: now,
-        updated_at: now,
-      };
+    if (!data) {
+      const { error } = await sb.from('users').insert(defaultUser(userId));
+      if (error) throw new Error(`users.upsert insert: ${error.message}`);
     } else {
-      cache.users[userId].updated_at = now;
+      const { error } = await sb.from('users').update({ updated_at: now }).eq('user_id', userId);
+      if (error) throw new Error(`users.upsert update: ${error.message}`);
     }
-    persist();
   },
 
-  get(userId: string): UserRecord | undefined {
-    return cache.users[userId];
+  async get(userId: string): Promise<UserRecord | undefined> {
+    const { data, error } = await getSupabase()
+      .from('users')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw new Error(`users.get: ${error.message}`);
+    return (data as UserRecord) ?? undefined;
   },
 
-  setToken(userId: string, encryptedToken: string): void {
-    this.upsert(userId);
-    cache.users[userId].encrypted_token = encryptedToken;
-    cache.users[userId].updated_at = new Date().toISOString();
-    persist();
+  async setToken(userId: string, encryptedToken: string): Promise<void> {
+    await this.upsert(userId);
+    const { error } = await getSupabase()
+      .from('users')
+      .update({ encrypted_token: encryptedToken, updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
+    if (error) throw new Error(`users.setToken: ${error.message}`);
   },
 
-  setTosAccepted(userId: string, accepted: boolean): void {
-    this.upsert(userId);
-    cache.users[userId].tos_accepted = accepted ? 1 : 0;
-    cache.users[userId].updated_at = new Date().toISOString();
-    persist();
+  async setTosAccepted(userId: string, accepted: boolean): Promise<void> {
+    await this.upsert(userId);
+    const { error } = await getSupabase()
+      .from('users')
+      .update({ tos_accepted: accepted ? 1 : 0, updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
+    if (error) throw new Error(`users.setTosAccepted: ${error.message}`);
   },
 
-  setLicensed(userId: string, licensed: boolean, keyId: string | null = null): void {
-    this.upsert(userId);
-    cache.users[userId].licensed = licensed ? 1 : 0;
-    cache.users[userId].license_key_id = keyId;
-    cache.users[userId].updated_at = new Date().toISOString();
-    persist();
+  async setLicensed(userId: string, licensed: boolean, keyId: string | null = null): Promise<void> {
+    await this.upsert(userId);
+    const { error } = await getSupabase()
+      .from('users')
+      .update({
+        licensed: licensed ? 1 : 0,
+        license_key_id: keyId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId);
+    if (error) throw new Error(`users.setLicensed: ${error.message}`);
   },
 
-  setBanned(userId: string, banned: boolean): void {
-    this.upsert(userId);
-    cache.users[userId].is_banned = banned ? 1 : 0;
-    if (banned) cache.users[userId].licensed = 0;
-    cache.users[userId].updated_at = new Date().toISOString();
-    persist();
+  async setBanned(
+    userId: string,
+    banned: boolean,
+    opts?: { reason?: string; expiresAt?: string | null; bannedBy?: string },
+  ): Promise<void> {
+    await this.upsert(userId);
+    const now = new Date().toISOString();
+    const payload = banned
+      ? {
+          is_banned: 1,
+          licensed: 0,
+          ban_reason: opts?.reason ?? 'Không có lý do',
+          ban_expires_at: opts?.expiresAt ?? null,
+          banned_by: opts?.bannedBy ?? null,
+          banned_at: now,
+          updated_at: now,
+        }
+      : {
+          is_banned: 0,
+          ban_reason: null,
+          ban_expires_at: null,
+          banned_by: null,
+          banned_at: null,
+          updated_at: now,
+        };
+    const { error } = await getSupabase().from('users').update(payload).eq('user_id', userId);
+    if (error) throw new Error(`users.setBanned: ${error.message}`);
   },
 
-  setAutoQuest(userId: string, enabled: boolean, dms: boolean): void {
-    this.upsert(userId);
-    cache.users[userId].autoquest_enabled = enabled ? 1 : 0;
-    cache.users[userId].dms_enabled = dms ? 1 : 0;
-    cache.users[userId].updated_at = new Date().toISOString();
-    persist();
+  async refreshBanStatus(userId: string): Promise<boolean> {
+    const u = await this.get(userId);
+    if (!u || !u.is_banned) return false;
+    if (u.ban_expires_at && new Date(u.ban_expires_at) <= new Date()) {
+      await this.setBanned(userId, false);
+      return true;
+    }
+    return false;
   },
 
-  canUseBot(userId: string): { ok: boolean; reason?: string } {
-    const u = this.get(userId);
+  async getBanInfo(userId: string) {
+    await this.refreshBanStatus(userId);
+    const u = await this.get(userId);
+    if (!u) return null;
+    return {
+      banned: !!u.is_banned,
+      reason: u.ban_reason,
+      expiresAt: u.ban_expires_at,
+      bannedBy: u.banned_by,
+      bannedAt: u.banned_at,
+    };
+  },
+
+  async setAutoQuest(userId: string, enabled: boolean, dms: boolean): Promise<void> {
+    await this.upsert(userId);
+    const { error } = await getSupabase()
+      .from('users')
+      .update({
+        autoquest_enabled: enabled ? 1 : 0,
+        dms_enabled: dms ? 1 : 0,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId);
+    if (error) throw new Error(`users.setAutoQuest: ${error.message}`);
+  },
+
+  async canUseBot(userId: string): Promise<{ ok: boolean; reason?: string }> {
+    const u = await this.get(userId);
     if (!u) return { ok: false, reason: 'Chưa đăng ký. Hãy dùng /agree trước.' };
-    if (u.is_banned) return { ok: false, reason: 'Tài khoản của bạn đã bị cấm sử dụng bot.' };
-    if (!u.tos_accepted) return { ok: false, reason: 'Bạn chưa chấp nhận Điều khoản sử dụng.' };
+    await this.refreshBanStatus(userId);
+    const u2 = await this.get(userId);
+    if (!u2) return { ok: false, reason: 'Chưa đăng ký. Hãy dùng /agree trước.' };
+    if (u2.is_banned) {
+      const until = u2.ban_expires_at
+        ? `<t:${Math.floor(new Date(u2.ban_expires_at).getTime() / 1000)}:R>`
+        : 'vĩnh viễn';
+      const reason = [
+        'Bạn đã bị cấm sử dụng bot.',
+        `Lý do: ${u2.ban_reason || '—'}`,
+        `Hết hạn: ${until}`,
+        u2.banned_by ? `Người cấm: <@${u2.banned_by}>` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return { ok: false, reason };
+    }
+    if (!u2.tos_accepted) {
+      return { ok: false, reason: 'Bạn chưa chấp nhận Điều khoản sử dụng.' };
+    }
     return { ok: true };
   },
 
-  getAllAutoQuestUsers(): UserRecord[] {
-    return Object.values(cache.users).filter(
-      (u) =>
-        u.autoquest_enabled === 1 &&
-        u.is_banned === 0 &&
-        u.tos_accepted === 1 &&
-        !!u.encrypted_token,
-    );
+  async getAllAutoQuestUsers(): Promise<UserRecord[]> {
+    const { data, error } = await getSupabase()
+      .from('users')
+      .select('*')
+      .eq('autoquest_enabled', 1)
+      .eq('is_banned', 0)
+      .eq('tos_accepted', 1)
+      .not('encrypted_token', 'is', null);
+    if (error) throw new Error(`users.getAllAutoQuestUsers: ${error.message}`);
+    return (data as UserRecord[]) || [];
   },
 };
 
+// ====================== STAFF ======================
 export const staff = {
-  add(userId: string, role: StaffRole, addedBy: string): void {
-    cache.staff[userId] = {
+  async add(userId: string, role: StaffRole, addedBy: string): Promise<void> {
+    const row: StaffRecord = {
       user_id: userId,
       role,
       added_by: addedBy,
       added_at: new Date().toISOString(),
     };
-    persist();
+    const { error } = await getSupabase().from('staff').upsert(row, { onConflict: 'user_id' });
+    if (error) throw new Error(`staff.add: ${error.message}`);
   },
 
-  remove(userId: string): void {
-    delete cache.staff[userId];
-    persist();
+  async remove(userId: string): Promise<void> {
+    const { error } = await getSupabase().from('staff').delete().eq('user_id', userId);
+    if (error) throw new Error(`staff.remove: ${error.message}`);
   },
 
-  get(userId: string): StaffRecord | undefined {
-    return cache.staff[userId];
+  async get(userId: string): Promise<StaffRecord | undefined> {
+    const { data, error } = await getSupabase()
+      .from('staff')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw new Error(`staff.get: ${error.message}`);
+    return (data as StaffRecord) ?? undefined;
   },
 
-  isOwner(userId: string): boolean {
+  async isOwner(userId: string): Promise<boolean> {
     if (userId === process.env.OWNER_ID) return true;
-    return this.get(userId)?.role === 'owner';
+    const s = await this.get(userId);
+    return s?.role === 'owner';
   },
 
-  isAdminOrOwner(userId: string): boolean {
+  async isAdminOrOwner(userId: string): Promise<boolean> {
     if (userId === process.env.OWNER_ID) return true;
-    const s = this.get(userId);
+    const s = await this.get(userId);
     return s?.role === 'owner' || s?.role === 'admin';
   },
 
-  list(): StaffRecord[] {
-    return Object.values(cache.staff);
+  async list(): Promise<StaffRecord[]> {
+    const { data, error } = await getSupabase().from('staff').select('*');
+    if (error) throw new Error(`staff.list: ${error.message}`);
+    return (data as StaffRecord[]) || [];
   },
 };
 
+// ====================== SERVERS ======================
 export const servers = {
-  add(guildId: string, addedBy: string): void {
-    if (cache.servers[guildId]) return;
-    cache.servers[guildId] = {
+  async add(guildId: string, addedBy: string): Promise<void> {
+    const existing = await this.isAllowed(guildId);
+    if (existing) return;
+    const row: ServerRecord = {
       guild_id: guildId,
       added_by: addedBy,
       added_at: new Date().toISOString(),
     };
-    persist();
+    const { error } = await getSupabase().from('servers').insert(row);
+    if (error) throw new Error(`servers.add: ${error.message}`);
   },
 
-  remove(guildId: string): void {
-    delete cache.servers[guildId];
-    persist();
+  async remove(guildId: string): Promise<void> {
+    const { error } = await getSupabase().from('servers').delete().eq('guild_id', guildId);
+    if (error) throw new Error(`servers.remove: ${error.message}`);
   },
 
-  isAllowed(guildId: string): boolean {
-    return !!cache.servers[guildId];
+  async isAllowed(guildId: string): Promise<boolean> {
+    const { data, error } = await getSupabase()
+      .from('servers')
+      .select('guild_id')
+      .eq('guild_id', guildId)
+      .maybeSingle();
+    if (error) throw new Error(`servers.isAllowed: ${error.message}`);
+    return !!data;
   },
 
-  list(): ServerRecord[] {
-    return Object.values(cache.servers);
-  },
-};
-
-export const keys = {
-  create(id: string, rawPayload: string, encryptedKey: string, createdBy: string): LicenseKeyRecord {
-    const now = new Date();
-    const expires = new Date(now.getTime() + 5 * 60 * 1000);
-
-    const record: LicenseKeyRecord = {
-      id,
-      raw_payload: rawPayload,
-      encrypted_key: encryptedKey,
-      created_by: createdBy,
-      created_at: now.toISOString(),
-      expires_at: expires.toISOString(),
-      used_by: null,
-      used_at: null,
-      status: 'unused',
-    };
-
-    cache.license_keys[id] = record;
-    persist();
-    return record;
-  },
-
-  findByEncrypted(encryptedKey: string): LicenseKeyRecord | undefined {
-    return Object.values(cache.license_keys).find((k) => k.encrypted_key === encryptedKey);
-  },
-
-  markUsed(id: string, usedBy: string): void {
-    const k = cache.license_keys[id];
-    if (!k) return;
-    k.status = 'used';
-    k.used_by = usedBy;
-    k.used_at = new Date().toISOString();
-    persist();
-  },
-
-  expireOldKeys(): number {
-    const now = new Date().toISOString();
-    let n = 0;
-    for (const k of Object.values(cache.license_keys)) {
-      if (k.status === 'unused' && k.expires_at < now) {
-        k.status = 'expired';
-        n++;
-      }
-    }
-    if (n > 0) persist();
-    return n;
-  },
-
-  get(id: string): LicenseKeyRecord | undefined {
-    return cache.license_keys[id];
+  async list(): Promise<ServerRecord[]> {
+    const { data, error } = await getSupabase().from('servers').select('*');
+    if (error) throw new Error(`servers.list: ${error.message}`);
+    return (data as ServerRecord[]) || [];
   },
 };
 
+// ====================== SETTINGS ======================
 export const settings = {
-  get(key: string): string | null {
-    return cache.settings[key] ?? null;
+  async get(key: string): Promise<string | null> {
+    const { data, error } = await getSupabase()
+      .from('settings')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (error) throw new Error(`settings.get: ${error.message}`);
+    return data?.value ?? null;
   },
 
-  set(key: string, value: string): void {
-    cache.settings[key] = value;
-    persist();
+  async set(key: string, value: string): Promise<void> {
+    const { error } = await getSupabase()
+      .from('settings')
+      .upsert({ key, value }, { onConflict: 'key' });
+    if (error) throw new Error(`settings.set: ${error.message}`);
   },
 };
 
-setInterval(() => keys.expireOldKeys(), 30_000);
-
-export default { users, staff, servers, keys, settings };
+export default { users, staff, servers, settings, initDatabase };

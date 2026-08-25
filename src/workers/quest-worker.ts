@@ -51,7 +51,7 @@ export class QuestWorkerManager {
   }
 
   private async getDecryptedToken(userId: string): Promise<string | null> {
-    const u = users.get(userId);
+    const u = await users.get(userId);
     if (!u?.encrypted_token) return null;
     try {
       return decrypt(u.encrypted_token);
@@ -61,7 +61,7 @@ export class QuestWorkerManager {
   }
 
   private async getNotiChannel(): Promise<TextChannel | null> {
-    const id = settings.get('notiquest_channel');
+    const id = await settings.get('notiquest_channel');
     if (!id) return null;
     try {
       const ch = await this.botClient.channels.fetch(id);
@@ -134,15 +134,19 @@ export class QuestWorkerManager {
     const token = await this.getDecryptedToken(userId);
     if (!token) return { ok: false, message: 'Chưa khai báo token. Dùng `/token` trước.' };
 
-    users.setAutoQuest(userId, true, dms);
+    await users.setAutoQuest(userId, true, dms);
 
     const abort = new AbortController();
     activeWorkers.set(userId, { userId, abort, mode: 'autoquest', startedAt: Date.now() });
 
     // Fire and forget loop
-    this.runAutoQuestLoop(userId, token, dms, abort.signal).finally(() => {
+    this.runAutoQuestLoop(userId, token, dms, abort.signal).finally(async () => {
       activeWorkers.delete(userId);
-      users.setAutoQuest(userId, false, dms);
+      try {
+        await users.setAutoQuest(userId, false, dms);
+      } catch (e) {
+        console.error('[Worker] setAutoQuest off failed:', e);
+      }
     });
 
     return { ok: true, message: '✅ Đã bật AutoQuest. Bot sẽ liên tục quét và hoàn thành quest.' };
@@ -153,17 +157,49 @@ export class QuestWorkerManager {
     const channel = await this.getNotiChannel();
     const progressMessages = new Map<string, string>(); // questId → messageId
 
+    const lastStatus = new Map<string, string>();
     const onProgress: ProgressCallback = async (info) => {
       if (!channel) return;
+      // Chỉ thông báo khi bắt đầu hoặc đổi trạng thái (không spam tiến độ từng giây)
+      const prev = lastStatus.get(info.questId);
+      const isStart = info.status === 'running' && !prev;
+      const isEnd = info.status !== 'running' && prev !== info.status;
+      if (!isStart && !isEnd) return;
+      lastStatus.set(info.questId, info.status);
+
       try {
-        const embed = this.buildProgressEmbed(
-          userId,
-          info.questName,
-          info.progress,
-          info.target,
-          info.status,
-          info.message,
-        );
+        const statusText =
+          info.status === 'running'
+            ? 'Đang thực hiện'
+            : info.status === 'claimed'
+              ? 'Đã nhận thưởng'
+              : info.status === 'completed'
+                ? 'Đã hoàn thành'
+                : info.status === 'failed'
+                  ? 'Thất bại'
+                  : 'Bỏ qua';
+
+        const embed = new EmbedBuilder()
+          .setColor(
+            info.status === 'claimed' || info.status === 'completed'
+              ? 0x57f287
+              : info.status === 'failed'
+                ? 0xed4245
+                : info.status === 'skipped'
+                  ? 0x99aab5
+                  : 0x5865f2,
+          )
+          .setTitle(info.questName.slice(0, 256))
+          .setDescription(
+            [
+              `**${statusText}**`,
+              `Người dùng: <@${userId}>`,
+              info.message ? `Ghi chú: ${info.message}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          )
+          .setTimestamp();
 
         const existing = progressMessages.get(info.questId);
         if (existing) {
@@ -175,17 +211,19 @@ export class QuestWorkerManager {
         }
         const sent = await channel.send({ embeds: [embed] });
         progressMessages.set(info.questId, sent.id);
-      } catch { /* ignore channel errors */ }
+      } catch { /* ignore */ }
 
-      // DM on near-complete / claimed if enabled
-      if (dms && (info.status === 'claimed' || (info.status === 'running' && info.remaining > 0 && info.remaining <= 30))) {
+      if (dms && (info.status === 'claimed' || info.status === 'failed')) {
         try {
           const user = await this.botClient.users.fetch(userId);
-          await user.send({
-            embeds: [
-              this.buildProgressEmbed(userId, info.questName, info.progress, info.target, info.status, info.message),
-            ],
-          }).catch(() => {});
+          await user
+            .send({
+              content:
+                info.status === 'claimed'
+                  ? `Quest **${info.questName}** đã claim xong.`
+                  : `Quest **${info.questName}** thất bại${info.message ? `: ${info.message}` : ''}.`,
+            })
+            .catch(() => {});
         } catch { /* ignore */ }
       }
     };
