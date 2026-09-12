@@ -9,44 +9,71 @@ import {
   ChannelType,
 } from 'discord.js';
 import { staff, servers, settings, users } from '../database';
+import { QuestNotifier } from '../workers/quest-notifier';
+import { decrypt } from '../utils/crypto';
+import { QuestEngine } from '../engine/quest-engine';
 
 export const bot2 = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
+let questNotifier: QuestNotifier;
+
 bot2.once(Events.ClientReady, async (c) => {
   console.log(`[Bot2] Logged in as ${c.user.tag}`);
+  try {
+    questNotifier = new QuestNotifier(bot2);
+    questNotifier.start();
 
-  const initial = (process.env.INITIAL_GUILD_IDS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const gid of initial) {
-    if (!await servers.isAllowed(gid)) {
-      await servers.add(gid, process.env.OWNER_ID || 'system');
-      console.log(`[Bot2] Auto-whitelisted guild from env: ${gid}`);
+    const initial = (process.env.INITIAL_GUILD_IDS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const gid of initial) {
+      try {
+        if (!(await servers.isAllowed(gid))) {
+          await servers.add(gid, process.env.OWNER_ID || 'system');
+          console.log(`[Bot2] Auto-whitelisted guild from env: ${gid}`);
+        }
+      } catch (e: any) {
+        console.error(`[Bot2] whitelist env ${gid}:`, e?.message || e);
+      }
     }
-  }
 
-  if ((await servers.list()).length === 0 && c.guilds.cache.size > 0) {
+    try {
+      if ((await servers.list()).length === 0 && c.guilds.cache.size > 0) {
+        for (const [guildId, guild] of c.guilds.cache) {
+          await servers.add(guildId, process.env.OWNER_ID || 'system');
+          console.log(`[Bot2] First-run: auto-whitelisted ${guild.name} (${guildId})`);
+        }
+      }
+    } catch (e: any) {
+      console.error('[Bot2] first-run whitelist:', e?.message || e);
+    }
+
     for (const [guildId, guild] of c.guilds.cache) {
-      await servers.add(guildId, process.env.OWNER_ID || 'system');
-      console.log(`[Bot2] First-run: auto-whitelisted ${guild.name} (${guildId})`);
+      try {
+        if (!(await servers.isAllowed(guildId))) {
+          console.log(`[Bot2] Leaving unauthorized guild: ${guild.name} (${guildId})`);
+          await guild.leave().catch(() => {});
+        }
+      } catch (e: any) {
+        console.error(`[Bot2] check guild ${guildId}:`, e?.message || e);
+      }
     }
-  }
-
-  for (const [guildId, guild] of c.guilds.cache) {
-    if (!await servers.isAllowed(guildId)) {
-      console.log(`[Bot2] Leaving unauthorized guild: ${guild.name} (${guildId})`);
-      await guild.leave().catch(() => {});
-    }
+  } catch (e: any) {
+    console.error('[Bot2] ClientReady error:', e?.message || e);
   }
 });
 
 bot2.on(Events.GuildCreate, async (guild) => {
-  if (!await servers.isAllowed(guild.id)) {
-    console.log(`[Bot2] Auto-leaving unauthorized guild: ${guild.name} (${guild.id})`);
-    await guild.leave().catch(() => {});
+  try {
+    if (!(await servers.isAllowed(guild.id))) {
+      console.log(`[Bot2] Auto-leaving unauthorized guild: ${guild.name} (${guild.id})`);
+      await guild.leave().catch(() => {});
+    }
+  } catch (e: any) {
+    console.error(`[Bot2] GuildCreate ${guild.id}:`, e?.message || e);
   }
 });
 
@@ -72,7 +99,7 @@ async function handleAdminCommand(interaction: ChatInputCommandInteraction) {
   const isOwner = await staff.isOwner(userId);
   const isAdmin = await staff.isAdminOrOwner(userId);
 
-  if (commandName === 'rejecto' && !isSuperOwner) {
+  if ((commandName === 'rejecto' || commandName === 'test') && !isSuperOwner) {
     await interaction.reply({
       content: '❌ Chỉ chủ sở hữu bot mới dùng được lệnh này.',
       flags: MessageFlags.Ephemeral,
@@ -335,6 +362,112 @@ async function handleAdminCommand(interaction: ChatInputCommandInteraction) {
       content: `✅ Đã gỡ Owner của \`${targetId}\`.`,
       flags: MessageFlags.Ephemeral,
     });
+    return;
+  }
+  // ---------- /test (OWNER_ID only) ----------
+  if (commandName === 'test') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    if (!questNotifier) {
+      await interaction.editReply({ content: '❌ Notifier chưa sẵn sàng.' });
+      return;
+    }
+
+    const notiResult = await questNotifier.testNearestQuest(userId);
+
+    let progressMsg = '';
+    try {
+      const notiId = await settings.get('notiquest_channel');
+      if (!notiId) {
+        progressMsg = 'Chưa set kênh `/notiquest`.';
+      } else {
+        const ch = await bot2.channels.fetch(notiId);
+        if (!ch || !ch.isTextBased()) {
+          progressMsg = 'Kênh notiquest không hợp lệ.';
+        } else {
+          let token: string | null = null;
+          const u = await users.get(userId);
+          if (u?.encrypted_token) {
+            try {
+              token = decrypt(u.encrypted_token);
+            } catch {
+              /* ignore */
+            }
+          }
+          if (!token) {
+            const tracked = await users.getTrackedUsers();
+            for (const row of tracked) {
+              if (!row.encrypted_token) continue;
+              try {
+                token = decrypt(row.encrypted_token);
+                break;
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+
+          let questName = 'Test Quest';
+          let progress = 0;
+          let target = 100;
+          if (token) {
+            try {
+              const engine = new QuestEngine(token);
+              const list = (await engine.loadQuests())
+                .filter((q) => !q.isExpired() && q.id !== '1412491570820812933')
+                .sort(
+                  (a, b) =>
+                    new Date(b.raw.config.starts_at || 0).getTime() -
+                    new Date(a.raw.config.starts_at || 0).getTime(),
+                );
+              if (list[0]) {
+                questName = list[0].name;
+                progress = list[0].getProgress();
+                target = list[0].getTarget() || 100;
+              }
+            } catch {
+              /* keep defaults */
+            }
+          }
+
+          const pct = target > 0 ? Math.min(100, Math.round((progress / target) * 100)) : 0;
+          const size = 12;
+          const filled = Math.min(size, Math.round((pct / 100) * size));
+          const bar = '█'.repeat(filled) + '░'.repeat(size - filled);
+
+          const embed = new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setAuthor({ name: '🔄  In Progress' })
+            .setTitle(questName.slice(0, 256))
+            .setDescription('`' + bar + '`  **' + pct + '%**')
+            .addFields({
+              name: 'Progress',
+              value: `**${progress}** / **${target}**`,
+              inline: true,
+            })
+            .setFooter({ text: 'Flow test — /test' })
+            .setTimestamp();
+
+          await ch.send({
+            content: `<@${userId}>`,
+            embeds: [embed],
+            allowedMentions: { users: [userId] },
+          });
+          progressMsg = `Đã gửi progress **${questName}** vào notiquest.`;
+        }
+      }
+    } catch (e: any) {
+      progressMsg = `Lỗi progress: ${e?.message || e}`;
+    }
+
+    const line1 = notiResult.ok
+      ? `✅ ${notiResult.message}`
+      : `⚠️ Notification: ${notiResult.message}`;
+    const line2 = progressMsg.startsWith('Đã')
+      ? `✅ ${progressMsg}`
+      : `⚠️ ${progressMsg}`;
+    await interaction.editReply({ content: `${line1}
+${line2}` });
     return;
   }
 }

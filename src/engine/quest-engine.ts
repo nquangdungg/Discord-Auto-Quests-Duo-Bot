@@ -1,11 +1,4 @@
-/**
- * Quest Engine – REST ONLY (user token / selfbot-style API calls)
- *
- * QUAN TRỌNG – TÁCH BIỆT THƯ VIỆN:
- * - File này KHÔNG import @discordjs/ws, KHÔNG patch WebSocketShard.
- * - Bot Discord (bot1/bot2) dùng discord.js riêng, không bị nhiễm.
- * - Chỉ gọi REST API với user token để làm quest (giống bản gốc farm).
- */
+/** Quest Engine — REST only với user token (không Gateway / không patch ws). */
 import { randomUUID } from 'node:crypto';
 
 export type Snowflake = string;
@@ -154,7 +147,7 @@ export class Quest {
     this.raw.user_status = status;
   }
 
-  private getTasks(): Record<string, QuestTask> | null {
+  getTasks(): Record<string, QuestTask> | null {
     return (this.raw.config.task_config_v2?.tasks ?? this.raw.config.task_config?.tasks ?? null) as any;
   }
 
@@ -301,30 +294,36 @@ export class QuestEngine {
       if (taskType === TaskType.WATCH_VIDEO || taskType === TaskType.WATCH_VIDEO_ON_MOBILE) {
         const enrolledAt = new Date(quest.userStatus?.enrolled_at as any).getTime();
         let finished = false;
+        let stepCount = 0;
+        const STEP = 10; // giây progress mỗi tick (nhanh hơn 7)
 
         while (!signal?.aborted) {
-          const maxAllowed = Math.floor((Date.now() - enrolledAt) / 1000) + 10;
-          const next = done + 7;
+          const maxAllowed = Math.floor((Date.now() - enrolledAt) / 1000) + 12;
+          const next = done + STEP;
 
-          if (maxAllowed - done >= 7) {
+          if (maxAllowed - done >= STEP) {
             const res = (await discordApi(this.token, 'POST', `/quests/${quest.id}/video-progress`, {
               timestamp: Math.min(target, next + Math.random()),
             })) as any;
             finished = res?.completed_at != null;
             done = Math.min(target, next);
+            stepCount++;
 
-            await onProgress?.({
-              questId: quest.id,
-              questName: quest.name,
-              progress: done,
-              target,
-              remaining: Math.max(0, target - done),
-              status: finished ? 'completed' : 'running',
-            });
+            // Chỉ báo progress mỗi 2 step hoặc khi xong — giảm spam Discord API embed
+            if (finished || stepCount % 2 === 0 || done >= target) {
+              await onProgress?.({
+                questId: quest.id,
+                questName: quest.name,
+                progress: done,
+                target,
+                remaining: Math.max(0, target - done),
+                status: finished || done >= target ? 'completed' : 'running',
+              });
+            }
           }
 
           if (next >= target) break;
-          await this.sleep(1000);
+          await this.sleep(900);
         }
 
         if (!finished && !signal?.aborted) {

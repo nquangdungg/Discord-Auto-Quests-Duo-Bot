@@ -17,6 +17,7 @@ import {
   TextInputStyle,
   StringSelectMenuBuilder,
   MessageFlags,
+  TextChannel,
 } from 'discord.js';
 import { users } from '../database';
 import { encrypt } from '../utils/crypto';
@@ -27,35 +28,71 @@ export const bot1 = new Client({
 });
 
 bot1.commands = new Collection();
-let workerManager: QuestWorkerManager;
+export let workerManager: QuestWorkerManager;
 
 function tosEmbed(): EmbedBuilder {
   return new EmbedBuilder()
-    .setColor(0x5865F2)
+    .setColor(0x5865f2)
     .setTitle('Điều khoản sử dụng')
     .setDescription(
       [
-        'Đây là công cụ **học tập / giáo dục**.',
+        'Công cụ **học tập / giáo dục**.',
         '',
-        '• Dùng **user token** tự động hoàn thành Quest **vi phạm Discord ToS**.',
-        '• Bạn **tự chịu rủi ro** bị hạn chế hoặc ban tài khoản.',
-        '• Lạm dụng (spam, bán token, chia sẻ token, thương mại trái phép…) → **ban vĩnh viễn**.',
-        '• Chỉ chủ bot có quyền ban người dùng.',
-        '• Token được **mã hóa AES-256-GCM**, không log plaintext.',
+        '• Dùng **user token** tự động Quest **vi phạm Discord ToS**.',
+        '• Bạn **tự chịu rủi ro** bị hạn chế / ban tài khoản.',
+        '• Lạm dụng → **ban khỏi bot**.',
+        '• Token **mã hóa AES-256-GCM**, không lưu plaintext.',
         '',
-        'Nhấn **Đồng ý** nếu bạn đã đọc và chấp nhận.',
+        'Nhấn **Đồng ý** nếu đã đọc và chấp nhận.',
       ].join('\n'),
     )
     .setTimestamp();
 }
 
-async function requireAccess(userId: string) {
-  return await users.canUseBot(userId);
+function helpEmbed(): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('Hướng dẫn sử dụng bot')
+    .setDescription('Bot hỗ trợ hoàn thành Discord Quest (mục đích học tập).')
+    .addFields(
+      {
+        name: '1️⃣ Bắt đầu',
+        value: [
+          '`/agree` — chấp nhận điều khoản',
+          '`/token` — nhập Discord **user token** (đã mã hóa)',
+        ].join('\n'),
+      },
+      {
+        name: '2️⃣ Quest',
+        value: [
+          '`/autoquest on|off [dms]` — bật/tắt tự động quét & làm quest (lưu DB, restart vẫn chạy)',
+          '`/auto` — làm **một lần** mọi quest pending rồi dừng',
+          '`/quest` — chọn quest cụ thể để làm',
+        ].join('\n'),
+      },
+      {
+        name: '3️⃣ Thứ tự',
+        value: '`/agree` → `/token` → `/auto` / `/autoquest` / `/quest`',
+      },
+      {
+        name: '⚠️ Lưu ý',
+        value: 'User token chỉ dùng acc phụ. Vi phạm ToS Discord — tự chịu rủi ro.',
+      },
+    )
+    .setFooter({ text: 'Bot1 — User commands' })
+    .setTimestamp();
 }
 
-bot1.once(Events.ClientReady, (c) => {
+async function requireAccess(userId: string) {
+  return users.canUseBot(userId);
+}
+
+bot1.once(Events.ClientReady, async (c) => {
   console.log(`[Bot1] Logged in as ${c.user.tag}`);
-  workerManager = new QuestWorkerManager(bot1);
+  // channelClient = bot2 (notiquest nằm server admin)
+  const { bot2 } = await import('./bot2');
+  workerManager = new QuestWorkerManager(bot1, bot2);
+  setTimeout(() => void workerManager.resumeFromDatabase(), 4000);
 });
 
 bot1.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -79,20 +116,29 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
 
   if (commandName === 'agree') {
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId('tos_accept')
-        .setLabel('Đồng ý')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('tos_reject')
-        .setLabel('Từ chối')
-        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('tos_accept').setLabel('Đồng ý').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('tos_reject').setLabel('Từ chối').setStyle(ButtonStyle.Danger),
     );
     await interaction.reply({
       embeds: [tosEmbed()],
       components: [row],
       flags: MessageFlags.Ephemeral,
     });
+    return;
+  }
+
+  if (commandName === 'help') {
+    const channel = interaction.options.getChannel('channel');
+    const embed = helpEmbed();
+    if (channel && channel.isTextBased()) {
+      await (channel as TextChannel).send({ embeds: [embed] });
+      await interaction.reply({
+        content: `✅ Đã gửi hướng dẫn tới ${channel}.`,
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    }
     return;
   }
 
@@ -122,10 +168,12 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     const dms = interaction.options.getBoolean('dms') ?? false;
 
     if (state === 'off') {
-      const stopped = workerManager?.stop(user.id) ?? false;
-      await users.setAutoQuest(user.id, false, dms);
+      const stopped = workerManager ? await workerManager.stop(user.id) : false;
+      if (!stopped) {
+        await users.setAutoQuest(user.id, false, dms);
+      }
       await interaction.reply({
-        content: stopped ? '⏹️ Đã dừng AutoQuest.' : 'Không có AutoQuest đang chạy.',
+        content: '⏹️ Đã tắt AutoQuest (đã lưu DB).',
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -158,29 +206,21 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
 
     const options = list.quests.slice(0, 25).map((q) => ({
       label: q.name.slice(0, 100),
-      description: `${q.taskIcon} ${q.getRewardLabel()} • còn ${q.getRemaining()}s`.slice(0, 100),
       value: q.id,
+      description: `${q.getRewardLabel()} • còn ${q.getRemaining()}`.slice(0, 100),
     }));
 
     const select = new StringSelectMenuBuilder()
       .setCustomId('quest_select')
-      .setPlaceholder('Chọn quest muốn hoàn thành…')
+      .setPlaceholder('Chọn quest…')
       .setMinValues(1)
       .setMaxValues(Math.min(options.length, 10))
       .addOptions(options);
 
     const embed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('Quest đang chờ')
-      .setDescription(
-        list.quests
-          .slice(0, 15)
-          .map(
-            (q, i) =>
-              `**${i + 1}.** ${q.taskIcon} **${q.name}**\n└ \`${q.getRewardLabel()}\` · còn **${q.getRemaining()}s**`,
-          )
-          .join('\n\n'),
-      )
+      .setColor(0x5865f2)
+      .setTitle('Quest pending')
+      .setDescription(`Có **${list.quests.length}** quest. Chọn quest để bot thực hiện.`)
       .setTimestamp();
 
     await interaction.editReply({
@@ -190,73 +230,67 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  await interaction.reply({
-    content: `Lệnh \`/${commandName}\` không khả dụng.`,
-    flags: MessageFlags.Ephemeral,
-  });
+  await interaction.reply({ content: 'Lệnh không hỗ trợ.', flags: MessageFlags.Ephemeral });
 }
 
 async function handleButton(interaction: ButtonInteraction) {
+  if (interaction.customId === 'tos_accept') {
+    await users.upsert(interaction.user.id);
+    await users.setTosAccepted(interaction.user.id, true);
+    await users.setLicensed(interaction.user.id, true, null);
+    await interaction.update({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setTitle('Đã chấp nhận ToS')
+          .setDescription('Tiếp theo dùng `/token` để liên kết tài khoản.')
+          .setTimestamp(),
+      ],
+      components: [],
+    });
+    return;
+  }
   if (interaction.customId === 'tos_reject') {
     await interaction.update({
       content: 'Bạn đã từ chối điều khoản. Không thể dùng bot.',
       embeds: [],
       components: [],
     });
-    return;
-  }
-
-  if (interaction.customId === 'tos_accept') {
-    await users.upsert(interaction.user.id);
-    await users.setTosAccepted(interaction.user.id, true);
-    await users.setLicensed(interaction.user.id, true, null); // keep field, no key system
-
-    const embed = new EmbedBuilder()
-      .setColor(0x57F287)
-      .setTitle('Đã chấp nhận điều khoản')
-      .setDescription('Tiếp theo dùng `/token` để khai báo user token, rồi `/auto` · `/autoquest` · `/quest`.')
-      .setTimestamp();
-
-    await interaction.update({ embeds: [embed], components: [] });
   }
 }
 
 async function handleModal(interaction: ModalSubmitInteraction) {
   if (interaction.customId !== 'modal_token') return;
-
   const token = interaction.fields.getTextInputValue('token_value').trim();
-  const userId = interaction.user.id;
-  const check = await requireAccess(userId);
-  if (!check.ok) {
-    await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
+  if (token.length < 50) {
+    await interaction.reply({ content: '❌ Token không hợp lệ.', flags: MessageFlags.Ephemeral });
     return;
   }
-
-  try {
-    await users.setToken(userId, encrypt(token));
-    const embed = new EmbedBuilder()
-      .setColor(0x57F287)
-      .setTitle('Token đã lưu')
-      .setDescription('Token đã được mã hóa.\nBạn có thể dùng `/autoquest`, `/auto` hoặc `/quest`.')
-      .setTimestamp();
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-  } catch (e: any) {
-    await interaction.reply({
-      content: `❌ Lỗi lưu token: ${e?.message || 'unknown'}`,
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-}
-
-async function handleSelect(interaction: StringSelectMenuInteraction) {
-  if (interaction.customId !== 'quest_select') return;
-
   const check = await requireAccess(interaction.user.id);
   if (!check.ok) {
     await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
     return;
   }
+  await users.setToken(interaction.user.id, encrypt(token));
+  await interaction.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle('Đã lưu token')
+        .setDescription('Token đã mã hóa. Dùng `/auto`, `/autoquest` hoặc `/quest`.')
+        .setTimestamp(),
+    ],
+    flags: MessageFlags.Ephemeral,
+  });
+}
 
+async function handleSelect(interaction: StringSelectMenuInteraction) {
+  if (interaction.customId !== 'quest_select') return;
+  const check = await requireAccess(interaction.user.id);
+  if (!check.ok) {
+    await interaction.reply({ content: `❌ ${check.reason}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
   await interaction.deferUpdate();
   const result = await workerManager.runSelected(interaction.user.id, interaction.values);
   await interaction.followUp({ content: result.message, flags: MessageFlags.Ephemeral });

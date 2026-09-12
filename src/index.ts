@@ -16,6 +16,10 @@ if (process.env.ENCRYPTION_KEY!.length !== 64) {
   process.exit(1);
 }
 
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
+
 async function main() {
   console.log('Starting Dual-Bot System (Educational)...');
   initDatabase();

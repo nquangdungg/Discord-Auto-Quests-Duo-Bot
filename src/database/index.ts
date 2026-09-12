@@ -1,3 +1,9 @@
+
+function isJwtTimeError(msg: string): boolean {
+  const m = (msg || '').toLowerCase();
+  return m.includes('jwt issued at future') || m.includes('token used before') || m.includes('iat');
+}
+
 /**
  * Supabase (PostgreSQL) database layer
  * Tables: users, staff, servers, settings
@@ -188,6 +194,18 @@ export const users = {
     if (error) throw new Error(`users.getAllAutoQuestUsers: ${error.message}`);
     return (data as UserRecord[]) || [];
   },
+
+  /** User đã agree + có token + không ban — dùng cho scan quest mới */
+  async getTrackedUsers(): Promise<UserRecord[]> {
+    const { data, error } = await getSupabase()
+      .from('users')
+      .select('*')
+      .eq('is_banned', 0)
+      .eq('tos_accepted', 1)
+      .not('encrypted_token', 'is', null);
+    if (error) throw new Error(`users.getTrackedUsers: ${error.message}`);
+    return (data as UserRecord[]) || [];
+  },
 };
 
 // ====================== STAFF ======================
@@ -262,7 +280,18 @@ export const servers = {
       .select('guild_id')
       .eq('guild_id', guildId)
       .maybeSingle();
-    if (error) throw new Error(`servers.isAllowed: ${error.message}`);
+    if (error) {
+      if (isJwtTimeError(error.message)) {
+        console.error(
+          '[DB] JWT time error (đồng hồ máy/container lệch). ' +
+            'Đồng bộ NTP rồi restart. Chi tiết:',
+          error.message,
+        );
+        // Fail-open tạm: không đá server khi DB lỗi đồng hồ (tránh crash bot)
+        return true;
+      }
+      throw new Error(`servers.isAllowed: ${error.message}`);
+    }
     return !!data;
   },
 

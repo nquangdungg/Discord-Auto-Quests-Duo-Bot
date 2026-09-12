@@ -1,9 +1,3 @@
-/**
- * Per-user Quest Worker Manager
- * - Supports continuous autoquest loop
- * - One-shot /auto and /quest
- * - Live embed updates on a notification channel
- */
 import { EmbedBuilder, TextChannel, Client } from 'discord.js';
 import { users, settings } from '../database';
 import { decrypt } from '../utils/crypto';
@@ -13,206 +7,241 @@ interface ActiveWorker {
   userId: string;
   abort: AbortController;
   mode: 'autoquest' | 'auto' | 'quest';
-  startedAt: number;
+  dms: boolean;
 }
 
 const activeWorkers = new Map<string, ActiveWorker>();
 
-function statusEmoji(s: string) {
-  switch (s) {
-    case 'running': return '🔄';
-    case 'completed': return '✅';
-    case 'claimed': return '⭐';
-    case 'failed': return '❌';
-    case 'skipped': return '⏭️';
-    default: return '❓';
-  }
-}
+/** Cache kênh + settings — tránh fetch DB/API mỗi lần progress */
+let notiChannelCache: { id: string; ch: TextChannel; at: number } | null = null;
+const CHANNEL_TTL = 120_000;
+const tokenCache = new Map<string, { token: string; at: number }>();
+const TOKEN_TTL = 300_000;
 
 function progressBar(current: number, total: number, size = 12): string {
   if (total <= 0) return '░'.repeat(size);
-  const filled = Math.min(size, Math.round((current / total) * size));
+  const filled = Math.min(size, Math.max(0, Math.round((current / total) * size)));
   return '█'.repeat(filled) + '░'.repeat(size - filled);
 }
 
+function statusMeta(status: string): { label: string; color: number; emoji: string } {
+  switch (status) {
+    case 'running':
+      return { label: 'In Progress', color: 0x5865f2, emoji: '🔄' };
+    case 'completed':
+      return { label: 'Completed', color: 0x57f287, emoji: '✅' };
+    case 'claimed':
+      return { label: 'Reward Claimed', color: 0xfee75c, emoji: '⭐' };
+    case 'failed':
+      return { label: 'Failed', color: 0xed4245, emoji: '❌' };
+    case 'skipped':
+      return { label: 'Skipped', color: 0x99aab5, emoji: '⏭️' };
+    default:
+      return { label: status, color: 0x2b2d31, emoji: '•' };
+  }
+}
+
 export class QuestWorkerManager {
-  constructor(private botClient: Client) {}
+  constructor(
+    private botClient: Client,
+    private channelClient?: Client,
+  ) {}
 
   isRunning(userId: string): boolean {
     return activeWorkers.has(userId);
   }
 
-  stop(userId: string): boolean {
+  async stop(userId: string): Promise<boolean> {
     const w = activeWorkers.get(userId);
     if (!w) return false;
     w.abort.abort();
     activeWorkers.delete(userId);
+    tokenCache.delete(userId);
+    try {
+      await users.setAutoQuest(userId, false, w.dms);
+    } catch {
+      /* ignore */
+    }
     return true;
   }
 
   private async getDecryptedToken(userId: string): Promise<string | null> {
+    const hit = tokenCache.get(userId);
+    if (hit && Date.now() - hit.at < TOKEN_TTL) return hit.token;
+
     const u = await users.get(userId);
     if (!u?.encrypted_token) return null;
     try {
-      return decrypt(u.encrypted_token);
+      const token = decrypt(u.encrypted_token);
+      tokenCache.set(userId, { token, at: Date.now() });
+      return token;
     } catch {
       return null;
     }
   }
 
   private async getNotiChannel(): Promise<TextChannel | null> {
+    if (notiChannelCache && Date.now() - notiChannelCache.at < CHANNEL_TTL) {
+      return notiChannelCache.ch;
+    }
     const id = await settings.get('notiquest_channel');
     if (!id) return null;
+    const client = this.channelClient ?? this.botClient;
     try {
-      const ch = await this.botClient.channels.fetch(id);
-      if (ch?.isTextBased()) return ch as TextChannel;
-    } catch { /* ignore */ }
+      const ch = await client.channels.fetch(id);
+      if (ch?.isTextBased()) {
+        notiChannelCache = { id, ch: ch as TextChannel, at: Date.now() };
+        return notiChannelCache.ch;
+      }
+    } catch {
+      /* ignore */
+    }
     return null;
   }
 
-  private buildProgressEmbed(
-    userId: string,
+  /** Embed progress — không chứa user (ping nằm ở content) */
+  private buildStatusEmbed(
     questName: string,
     progress: number,
     target: number,
     status: string,
     extra?: string,
   ): EmbedBuilder {
-    const remaining = Math.max(0, target - progress);
+    const meta = statusMeta(status);
     const pct = target > 0 ? Math.min(100, Math.round((progress / target) * 100)) : 0;
-
-    const statusLabel: Record<string, string> = {
-      running: 'Đang chạy',
-      completed: 'Hoàn thành',
-      claimed: 'Đã nhận thưởng',
-      failed: 'Thất bại',
-      skipped: 'Bỏ qua',
-    };
+    const bar = progressBar(progress, target);
 
     const embed = new EmbedBuilder()
-      .setColor(
-        status === 'claimed' || status === 'completed'
-          ? 0x57f287
-          : status === 'failed'
-            ? 0xed4245
-            : status === 'skipped'
-              ? 0x99aab5
-              : 0x5865f2,
-      )
-      .setAuthor({ name: statusLabel[status] || status })
+      .setColor(meta.color)
+      .setAuthor({ name: `${meta.emoji}  ${meta.label}` })
       .setTitle(questName.slice(0, 256))
-      .setDescription(
-        [
-          `${progressBar(progress, target)} **${pct}%**`,
-          '',
-          '```',
-          `${String(progress).padStart(6)} / ${target}   ·   còn ${remaining}s`,
-          '```',
-        ].join('\n'),
-      )
-      .addFields(
-        { name: 'Người dùng', value: `<@${userId}>`, inline: true },
-        { name: 'Trạng thái', value: `${statusEmoji(status)} \`${status}\``, inline: true },
-      )
+      .setDescription(`\`${bar}\`  **${pct}%**`)
+      .addFields({
+        name: 'Progress',
+        value: `**${progress}** / **${target}**`,
+        inline: true,
+      })
       .setTimestamp();
 
     if (extra) {
-      embed.addFields({ name: 'Ghi chú', value: extra.slice(0, 1024) });
+      embed.addFields({ name: 'Note', value: extra.slice(0, 1024) });
     }
-
     return embed;
   }
 
   /**
-   * Start continuous autoquest loop for a user.
+   * Gửi/cập nhật progress: mention user NGOÀI embed để Discord ping thật.
+   * Throttle: chỉ gửi khi start/end hoặc nhảy ≥10% (tránh spam API).
    */
-  async startAutoQuest(userId: string, dms: boolean): Promise<{ ok: boolean; message: string }> {
+  private createProgressPoster(userId: string) {
+    const progressMessages = new Map<string, string>();
+    const lastPct = new Map<string, number>();
+    const lastStatus = new Map<string, string>();
+
+    const onProgress: ProgressCallback = async (info) => {
+      const channel = await this.getNotiChannel();
+      if (!channel) return;
+
+      const pct = info.target > 0 ? Math.round((info.progress / info.target) * 100) : 0;
+      const prevPct = lastPct.get(info.questId) ?? -1;
+      const prevStatus = lastStatus.get(info.questId);
+      const isTerminal = info.status !== 'running';
+      const isStart = info.status === 'running' && prevStatus == null;
+      const jumped = pct - prevPct >= 10 || pct === 100;
+
+      if (!isStart && !isTerminal && !jumped) return;
+      if (prevStatus === info.status && !jumped && !isTerminal) return;
+
+      lastPct.set(info.questId, pct);
+      lastStatus.set(info.questId, info.status);
+
+      const embed = this.buildStatusEmbed(
+        info.questName,
+        info.progress,
+        info.target,
+        info.status,
+        info.message,
+      );
+
+      // Ping ngoài embed
+      const payload = {
+        content: `<@${userId}>`,
+        embeds: [embed],
+        allowedMentions: { users: [userId] },
+      };
+
+      try {
+        const existing = progressMessages.get(info.questId);
+        if (existing) {
+          const msg = await channel.messages.fetch(existing).catch(() => null);
+          if (msg) {
+            await msg.edit(payload);
+            return;
+          }
+        }
+        const sent = await channel.send(payload);
+        progressMessages.set(info.questId, sent.id);
+      } catch {
+        /* ignore */
+      }
+
+    };
+
+    return onProgress;
+  }
+
+  async resumeFromDatabase(): Promise<void> {
+    try {
+      const list = await users.getAllAutoQuestUsers();
+      console.log(`[Worker] Resume autoquest: ${list.length} user(s)`);
+      await Promise.all(
+        list.map(async (u) => {
+          if (activeWorkers.has(u.user_id)) return;
+          const r = await this.startAutoQuest(u.user_id, u.dms_enabled === 1, true);
+          console.log(`[Worker] Resume ${u.user_id}: ${r.message}`);
+        }),
+      );
+    } catch (e) {
+      console.error('[Worker] resumeFromDatabase failed:', e);
+    }
+  }
+
+  async startAutoQuest(
+    userId: string,
+    dms: boolean,
+    skipDbWrite = false,
+  ): Promise<{ ok: boolean; message: string }> {
     if (activeWorkers.has(userId)) {
-      return { ok: false, message: 'Bạn đang có worker chạy rồi. Dùng `/autoquest off` để dừng.' };
+      return { ok: false, message: 'Bạn đang có AutoQuest chạy. Dùng `/autoquest off` để dừng.' };
     }
 
     const token = await this.getDecryptedToken(userId);
     if (!token) return { ok: false, message: 'Chưa khai báo token. Dùng `/token` trước.' };
 
-    await users.setAutoQuest(userId, true, dms);
+    if (!skipDbWrite) {
+      await users.setAutoQuest(userId, true, dms);
+    }
 
     const abort = new AbortController();
-    activeWorkers.set(userId, { userId, abort, mode: 'autoquest', startedAt: Date.now() });
+    activeWorkers.set(userId, { userId, abort, mode: 'autoquest', dms });
 
-    // Fire and forget loop
-    this.runAutoQuestLoop(userId, token, dms, abort.signal).finally(async () => {
+    void this.runAutoQuestLoop(userId, token, dms, abort.signal).finally(() => {
       activeWorkers.delete(userId);
-      try {
-        await users.setAutoQuest(userId, false, dms);
-      } catch (e) {
-        console.error('[Worker] setAutoQuest off failed:', e);
-      }
     });
 
-    return { ok: true, message: '✅ Đã bật AutoQuest. Bot sẽ liên tục quét và hoàn thành quest.' };
+    return { ok: true, message: '✅ Đã bật AutoQuest (lưu DB — restart bot vẫn tiếp tục).' };
   }
 
-  private async runAutoQuestLoop(userId: string, token: string, dms: boolean, signal: AbortSignal) {
-    const engine = new QuestEngine(token);
-    const channel = await this.getNotiChannel();
-    const progressMessages = new Map<string, string>(); // questId → messageId
-
-    const lastStatus = new Map<string, string>();
-    const onProgress: ProgressCallback = async (info) => {
-      if (!channel) return;
-      // Chỉ thông báo khi bắt đầu hoặc đổi trạng thái (không spam tiến độ từng giây)
-      const prev = lastStatus.get(info.questId);
-      const isStart = info.status === 'running' && !prev;
-      const isEnd = info.status !== 'running' && prev !== info.status;
-      if (!isStart && !isEnd) return;
-      lastStatus.set(info.questId, info.status);
-
-      try {
-        const statusText =
-          info.status === 'running'
-            ? 'Đang thực hiện'
-            : info.status === 'claimed'
-              ? 'Đã nhận thưởng'
-              : info.status === 'completed'
-                ? 'Đã hoàn thành'
-                : info.status === 'failed'
-                  ? 'Thất bại'
-                  : 'Bỏ qua';
-
-        const embed = new EmbedBuilder()
-          .setColor(
-            info.status === 'claimed' || info.status === 'completed'
-              ? 0x57f287
-              : info.status === 'failed'
-                ? 0xed4245
-                : info.status === 'skipped'
-                  ? 0x99aab5
-                  : 0x5865f2,
-          )
-          .setTitle(info.questName.slice(0, 256))
-          .setDescription(
-            [
-              `**${statusText}**`,
-              `Người dùng: <@${userId}>`,
-              info.message ? `Ghi chú: ${info.message}` : '',
-            ]
-              .filter(Boolean)
-              .join('\n'),
-          )
-          .setTimestamp();
-
-        const existing = progressMessages.get(info.questId);
-        if (existing) {
-          const msg = await channel.messages.fetch(existing).catch(() => null);
-          if (msg) {
-            await msg.edit({ embeds: [embed] });
-            return;
-          }
-        }
-        const sent = await channel.send({ embeds: [embed] });
-        progressMessages.set(info.questId, sent.id);
-      } catch { /* ignore */ }
-
+  private async runAutoQuestLoop(
+    userId: string,
+    token: string,
+    dms: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const onProgress = this.createProgressPoster(userId);
+    // inject dms into poster via wrapping
+    const wrapped: ProgressCallback = async (info) => {
+      await onProgress({ ...info, ...(dms ? {} : {}) });
       if (dms && (info.status === 'claimed' || info.status === 'failed')) {
         try {
           const user = await this.botClient.users.fetch(userId);
@@ -220,72 +249,48 @@ export class QuestWorkerManager {
             .send({
               content:
                 info.status === 'claimed'
-                  ? `Quest **${info.questName}** đã claim xong.`
-                  : `Quest **${info.questName}** thất bại${info.message ? `: ${info.message}` : ''}.`,
+                  ? `⭐ **${info.questName}** — đã claim.`
+                  : `❌ **${info.questName}** thất bại${info.message ? `: ${info.message}` : ''}.`,
             })
             .catch(() => {});
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     };
 
     while (!signal.aborted) {
       try {
-        await engine.runPending(onProgress, signal);
-      } catch (err: any) {
-        console.error(`[Worker ${userId}] loop error:`, err?.message);
+        const engine = new QuestEngine(token);
+        await engine.runPending(wrapped, signal);
+      } catch (e: any) {
+        console.error(`[Worker] autoquest ${userId}:`, e?.message || e);
       }
-      // Wait 2 minutes before next full scan
-      await new Promise((r) => {
-        const t = setTimeout(r, 120_000);
-        signal.addEventListener('abort', () => {
-          clearTimeout(t);
-          r(null);
-        }, { once: true });
-      });
+      if (signal.aborted) break;
+      await sleep(signal, 5_000);
     }
   }
 
-  /**
-   * One-shot: run all pending then stop.
-   */
   async runOnce(userId: string): Promise<{ ok: boolean; message: string }> {
     if (activeWorkers.has(userId)) {
       return { ok: false, message: 'Đang có worker chạy. Hãy dừng trước.' };
     }
 
     const token = await this.getDecryptedToken(userId);
-    if (!token) return { ok: false, message: 'Chưa khai báo token. Dùng `/token` trước.' };
+    if (!token) return { ok: false, message: 'Chưa khai báo token.' };
 
     const abort = new AbortController();
-    activeWorkers.set(userId, { userId, abort, mode: 'auto', startedAt: Date.now() });
-
-    const engine = new QuestEngine(token);
-    const channel = await this.getNotiChannel();
-    const progressMessages = new Map<string, string>();
-
-    const onProgress: ProgressCallback = async (info) => {
-      if (!channel) return;
-      try {
-        const embed = this.buildProgressEmbed(
-          userId, info.questName, info.progress, info.target, info.status, info.message,
-        );
-        const existing = progressMessages.get(info.questId);
-        if (existing) {
-          const msg = await channel.messages.fetch(existing).catch(() => null);
-          if (msg) {
-            await msg.edit({ embeds: [embed] });
-            return;
-          }
-        }
-        const sent = await channel.send({ embeds: [embed] });
-        progressMessages.set(info.questId, sent.id);
-      } catch { /* ignore */ }
-    };
+    activeWorkers.set(userId, { userId, abort, mode: 'auto', dms: false });
+    const onProgress = this.createProgressPoster(userId);
 
     try {
+      const engine = new QuestEngine(token);
       const results = await engine.runPending(onProgress, abort.signal);
-      const summary = results.map((r) => `• ${r.quest.name}: **${r.result}**`).join('\n') || 'Không có quest pending.';
-      return { ok: true, message: `✅ Đã chạy xong:\n${summary}` };
+      const lines = results.map((r) => `• ${r.quest.name}: **${r.result}**`);
+      return {
+        ok: true,
+        message: lines.length ? `✅ Xong:\n${lines.join('\n')}` : '✨ Không có quest pending.',
+      };
     } catch (err: any) {
       return { ok: false, message: `❌ Lỗi: ${err?.message || 'unknown'}` };
     } finally {
@@ -293,9 +298,6 @@ export class QuestWorkerManager {
     }
   }
 
-  /**
-   * Run specific quests by IDs.
-   */
   async runSelected(userId: string, questIds: string[]): Promise<{ ok: boolean; message: string }> {
     if (activeWorkers.has(userId)) {
       return { ok: false, message: 'Đang có worker chạy. Hãy dừng trước.' };
@@ -305,43 +307,23 @@ export class QuestWorkerManager {
     if (!token) return { ok: false, message: 'Chưa khai báo token.' };
 
     const abort = new AbortController();
-    activeWorkers.set(userId, { userId, abort, mode: 'quest', startedAt: Date.now() });
-
-    const engine = new QuestEngine(token);
-    const channel = await this.getNotiChannel();
-    const progressMessages = new Map<string, string>();
-
-    const onProgress: ProgressCallback = async (info) => {
-      if (!channel) return;
-      try {
-        const embed = this.buildProgressEmbed(
-          userId, info.questName, info.progress, info.target, info.status, info.message,
-        );
-        const existing = progressMessages.get(info.questId);
-        if (existing) {
-          const msg = await channel.messages.fetch(existing).catch(() => null);
-          if (msg) {
-            await msg.edit({ embeds: [embed] });
-            return;
-          }
-        }
-        const sent = await channel.send({ embeds: [embed] });
-        progressMessages.set(info.questId, sent.id);
-      } catch { /* ignore */ }
-    };
+    activeWorkers.set(userId, { userId, abort, mode: 'quest', dms: false });
+    const onProgress = this.createProgressPoster(userId);
 
     try {
+      const engine = new QuestEngine(token);
       const all = await engine.loadQuests();
       const selected = all.filter((q) => questIds.includes(q.id));
       const results: string[] = [];
-
       for (const q of selected) {
         if (abort.signal.aborted) break;
         const result = await engine.execute(q, onProgress, abort.signal);
         results.push(`• ${q.name}: **${result}**`);
       }
-
-      return { ok: true, message: `✅ Kết quả:\n${results.join('\n') || 'Không có quest nào được chọn.'}` };
+      return {
+        ok: true,
+        message: `✅ Kết quả:\n${results.join('\n') || 'Không có quest nào được chọn.'}`,
+      };
     } catch (err: any) {
       return { ok: false, message: `❌ Lỗi: ${err?.message || 'unknown'}` };
     } finally {
@@ -349,13 +331,9 @@ export class QuestWorkerManager {
     }
   }
 
-  /**
-   * List pending quests for a user (for /quest select menu).
-   */
   async listPending(userId: string): Promise<{ ok: boolean; quests?: Quest[]; message?: string }> {
     const token = await this.getDecryptedToken(userId);
     if (!token) return { ok: false, message: 'Chưa khai báo token.' };
-
     try {
       const engine = new QuestEngine(token);
       const all = await engine.loadQuests();
@@ -367,4 +345,18 @@ export class QuestWorkerManager {
       return { ok: false, message: err?.message || 'Không tải được quest' };
     }
   }
+}
+
+function sleep(signal: AbortSignal, ms: number): Promise<void> {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t);
+        r();
+      },
+      { once: true },
+    );
+  });
 }

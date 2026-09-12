@@ -3,6 +3,13 @@ import 'dotenv/config';
 
 const bot1Commands = [
   new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Hướng dẫn sử dụng bot')
+    .addChannelOption((o) =>
+      o.setName('channel').setDescription('Gửi hướng dẫn tới kênh này').setRequired(false),
+    ),
+
+  new SlashCommandBuilder()
     .setName('agree')
     .setDescription('Chấp nhận điều khoản sử dụng'),
   new SlashCommandBuilder()
@@ -109,6 +116,9 @@ const bot2Commands = [
     .addStringOption((o) =>
       o.setName('user_id').setDescription('Discord User ID').setRequired(true),
     ),
+  new SlashCommandBuilder()
+    .setName('test')
+    .setDescription('Test gửi quest gần nhất + progress (chỉ OWNER gốc)'),
 ].map((c) => c.toJSON());
 
 async function main() {
