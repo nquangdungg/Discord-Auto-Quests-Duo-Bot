@@ -3,7 +3,7 @@ import { users, settings } from '../database';
 import { decrypt } from '../utils/crypto';
 import { QuestEngine, Quest, TaskType } from '../engine/quest-engine';
 
-const POLL_MS = Number(process.env.QUEST_NOTIFY_INTERVAL_MS) || 5 * 60 * 1000;
+const POLL_MS = Number(process.env.QUEST_NOTIFY_INTERVAL_MS) || 4000;
 const KNOWN_KEY = 'known_quest_ids';
 
 function taskLabel(q: Quest): string {
